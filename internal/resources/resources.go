@@ -12,12 +12,12 @@ type Resource struct {
 	State int    `json:"state"`
 }
 
-func NewResource(id string, name string) Resource {
-	return Resource{
+func NewResource(id string, name string) *Resource {
+	return &Resource{
 		ID:    id,
 		Name:  name,
 		State: StateAvailable,
 	}
 }
 
-var AvailableResources = []Resource{NewResource("abcd", "Seat 1"), NewResource("efgh", "Seat 2"), NewResource("ijkl", "Seat 3")}
+var AvailableResources = []*Resource{NewResource("abcd", "Seat 1"), NewResource("efgh", "Seat 2"), NewResource("ijkl", "Seat 3")}
