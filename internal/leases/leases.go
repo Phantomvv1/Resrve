@@ -25,7 +25,7 @@ type Lease struct {
 	TTL          time.Time `json:"ttl"`
 }
 
-func NewLease(holder string) (*Lease, error) {
+func NewLease(holder string, fencingToken int) (*Lease, error) {
 	idBytes := make([]byte, 32)
 	_, err := rand.Read(idBytes)
 	if err != nil {
@@ -35,7 +35,7 @@ func NewLease(holder string) (*Lease, error) {
 	return &Lease{
 		ID:           string(idBytes),
 		Holder:       holder,
-		FencingToken: 0,
+		FencingToken: fencingToken,
 		TTL:          time.Now().Add(time.Second * 10),
 	}, nil
 }
@@ -50,7 +50,23 @@ func getResourceById(id string) (*resources.Resource, error) {
 	return nil, ErrNoSuchResource
 }
 
+func CreateAndReturnLease(c *gin.Context, resource *resources.Resource, fencingToken int) {
+	resultLease, err := NewLease(c.ClientIP(), fencingToken)
+	if err != nil {
+		log.Println(err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	muLeaseMap.Lock()
+	leaseMap[resource] = resultLease
+	muLeaseMap.Unlock()
+
+	c.JSON(http.StatusOK, gin.H{"result": resultLease})
+}
+
 func AcquireLease(c *gin.Context) {
+	now := time.Now().UTC()
 	id := c.Param("id")
 
 	resource, err := getResourceById(id)
@@ -65,18 +81,15 @@ func AcquireLease(c *gin.Context) {
 	muLeaseMap.Unlock()
 
 	if !ok {
-		resultLease, err := NewLease(c.ClientIP())
-		if err != nil {
-			log.Println(err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
+		CreateAndReturnLease(c, resource, 0)
+		return
+	}
 
-		muLeaseMap.Lock()
-		leaseMap[resource] = resultLease
-		muLeaseMap.Unlock()
-
-		c.JSON(http.StatusOK, gin.H{"result": resultLease})
+	if now.After(lease.TTL) {
+		CreateAndReturnLease(c, resource, lease.FencingToken+1)
+		return
+	} else {
+		c.JSON(http.StatusConflict, gin.H{"error": "Error: the resource is unavailable at the moment"})
 		return
 	}
 }
