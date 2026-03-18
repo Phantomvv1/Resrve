@@ -2,6 +2,7 @@ package leases
 
 import (
 	"crypto/rand"
+	"encoding/base64"
 	"errors"
 	"log"
 	"net/http"
@@ -32,8 +33,10 @@ func NewLease(holder string, fencingToken int) (*Lease, error) {
 		return nil, ErrMakingLeaseId
 	}
 
+	id := base64.StdEncoding.EncodeToString(idBytes)
+
 	return &Lease{
-		ID:           string(idBytes),
+		ID:           id,
 		Holder:       holder,
 		FencingToken: fencingToken,
 		TTL:          time.Now().Add(time.Second * 10),
