@@ -13,7 +13,6 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-var ErrNoSuchResource = errors.New("Error: there is no such resource available")
 var ErrMakingLeaseId = errors.New("Error: unable to make an id for the new lease")
 
 var leaseMap = make(map[*resources.Resource]*Lease)
@@ -43,14 +42,12 @@ func NewLease(holder string, fencingToken int) (*Lease, error) {
 	}, nil
 }
 
-func getResourceById(id string) (*resources.Resource, error) {
-	for _, resource := range resources.AvailableResources {
-		if resource.ID == id {
-			return resource, nil
-		}
-	}
+func getLease(resource *resources.Resource) (*Lease, bool) {
+	muLeaseMap.Lock()
+	lease, ok := leaseMap[resource]
+	muLeaseMap.Unlock()
 
-	return nil, ErrNoSuchResource
+	return lease, ok
 }
 
 func CreateAndReturnLease(c *gin.Context, resource *resources.Resource, fencingToken int) {
@@ -61,6 +58,8 @@ func CreateAndReturnLease(c *gin.Context, resource *resources.Resource, fencingT
 		return
 	}
 
+	resource.State = resources.StateTaken
+
 	muLeaseMap.Lock()
 	leaseMap[resource] = resultLease
 	muLeaseMap.Unlock()
@@ -69,19 +68,11 @@ func CreateAndReturnLease(c *gin.Context, resource *resources.Resource, fencingT
 }
 
 func AcquireLease(c *gin.Context) {
-	now := time.Now().UTC()
-	id := c.Param("id")
+	now := c.GetTime("time")
+	resourceAny, _ := c.Get("resource")
+	resource := resourceAny.(*resources.Resource)
 
-	resource, err := getResourceById(id)
-	if err != nil {
-		log.Println(err)
-		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
-		return
-	}
-
-	muLeaseMap.Lock()
-	lease, ok := leaseMap[resource]
-	muLeaseMap.Unlock()
+	lease, ok := getLease(resource)
 
 	if !ok {
 		CreateAndReturnLease(c, resource, 0)
@@ -98,26 +89,40 @@ func AcquireLease(c *gin.Context) {
 }
 
 func RenewLease(c *gin.Context) {
+	now := c.GetTime("time")
+	resourceAny, _ := c.Get("resource")
+	resource := resourceAny.(*resources.Resource)
 
-}
+	lease, ok := getLease(resource)
 
-func ReleaseLease(c *gin.Context) {
-
-}
-
-func GetLease(c *gin.Context) {
-	id := c.Param("id")
-
-	resource, err := getResourceById(id)
-	if err != nil {
-		log.Println(err)
-		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+	if !ok {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Error: there is no lease made on this resource"})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"result": resource})
+	if lease.Holder == c.ClientIP() && !now.After(lease.TTL) {
+		CreateAndReturnLease(c, resource, lease.FencingToken+1)
+		return
+	}
+
+	c.JSON(http.StatusForbidden, gin.H{"error": "Error: you don't have the permission to renew a lease you don't own"})
 }
 
-func GetAllLeases(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"result": resources.AvailableResources})
+func ReleaseLease(c *gin.Context) {
+	now := c.GetTime("time")
+	resourceAny, _ := c.Get("resource")
+	resource := resourceAny.(*resources.Resource)
+
+	lease, ok := getLease(resource)
+
+	if !ok {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Error: there is no lease made on this resource"})
+		return
+	}
+
+	if lease.Holder == c.ClientIP() && !now.After(lease.TTL) {
+		lease.TTL = now
+		c.JSON(http.StatusOK, gin.H{"result": "You have successfully released the lease"})
+		return
+	}
 }

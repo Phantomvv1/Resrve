@@ -1,10 +1,18 @@
 package resources
 
-const (
-	StateAvailable = iota
-	StateStalling
-	StateUnAvailable
+import (
+	"errors"
+	"net/http"
+
+	"github.com/gin-gonic/gin"
 )
+
+const (
+	StateFree = iota
+	StateTaken
+)
+
+var ErrNoSuchResource = errors.New("Error: there is no such resource available")
 
 type Resource struct {
 	ID    string `json:"id"`
@@ -16,8 +24,29 @@ func NewResource(id string, name string) *Resource {
 	return &Resource{
 		ID:    id,
 		Name:  name,
-		State: StateAvailable,
+		State: StateFree,
 	}
 }
 
-var AvailableResources = []*Resource{NewResource("abcd", "Seat 1"), NewResource("efgh", "Seat 2"), NewResource("ijkl", "Seat 3")}
+var availableResources = []*Resource{NewResource("abcd", "Seat 1"), NewResource("efgh", "Seat 2"), NewResource("ijkl", "Seat 3")}
+
+func GetResourceById(id string) (*Resource, error) {
+	for _, resource := range availableResources {
+		if resource.ID == id {
+			return resource, nil
+		}
+	}
+
+	return nil, ErrNoSuchResource
+}
+
+func GetResource(c *gin.Context) {
+	resourceAny, _ := c.Get("resource")
+	resource := resourceAny.(*Resource)
+
+	c.JSON(http.StatusOK, gin.H{"result": resource})
+}
+
+func GetAllResources(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{"result": availableResources})
+}
