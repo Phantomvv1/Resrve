@@ -23,6 +23,7 @@ type Lease struct {
 	Holder       string    `json:"holder"`
 	FencingToken int       `json:"fencing_token"`
 	TTL          time.Time `json:"ttl"`
+	done         chan struct{}
 }
 
 func NewLease(holder string, fencingToken int) (*Lease, error) {
@@ -39,6 +40,7 @@ func NewLease(holder string, fencingToken int) (*Lease, error) {
 		Holder:       holder,
 		FencingToken: fencingToken,
 		TTL:          time.Now().Add(time.Second * 10),
+		done:         make(chan struct{}),
 	}, nil
 }
 
@@ -50,12 +52,12 @@ func getLease(resource *resources.Resource) (*Lease, bool) {
 	return lease, ok
 }
 
-func CreateAndReturnLease(c *gin.Context, resource *resources.Resource, fencingToken int) {
+func CreateAndReturnLease(c *gin.Context, resource *resources.Resource, fencingToken int) *Lease {
 	resultLease, err := NewLease(c.ClientIP(), fencingToken)
 	if err != nil {
 		log.Println(err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
+		return nil
 	}
 
 	resource.State = resources.StateTaken
@@ -65,6 +67,7 @@ func CreateAndReturnLease(c *gin.Context, resource *resources.Resource, fencingT
 	muLeaseMap.Unlock()
 
 	c.JSON(http.StatusOK, gin.H{"result": resultLease})
+	return resultLease
 }
 
 func AcquireLease(c *gin.Context) {
@@ -73,14 +76,15 @@ func AcquireLease(c *gin.Context) {
 	resource := resourceAny.(*resources.Resource)
 
 	lease, ok := getLease(resource)
-
 	if !ok {
-		CreateAndReturnLease(c, resource, 0)
+		resultLease := CreateAndReturnLease(c, resource, 0)
+		go cleanState(resultLease, resource)
 		return
 	}
 
 	if now.After(lease.TTL) {
-		CreateAndReturnLease(c, resource, lease.FencingToken+1)
+		resultLease := CreateAndReturnLease(c, resource, lease.FencingToken+1)
+		go cleanState(resultLease, resource)
 		return
 	} else {
 		c.JSON(http.StatusConflict, gin.H{"error": "Error: the resource is unavailable at the moment"})
@@ -94,7 +98,6 @@ func RenewLease(c *gin.Context) {
 	resource := resourceAny.(*resources.Resource)
 
 	lease, ok := getLease(resource)
-
 	if !ok {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Error: there is no lease made on this resource"})
 		return
@@ -114,15 +117,33 @@ func ReleaseLease(c *gin.Context) {
 	resource := resourceAny.(*resources.Resource)
 
 	lease, ok := getLease(resource)
-
 	if !ok {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Error: there is no lease made on this resource"})
 		return
 	}
 
 	if lease.Holder == c.ClientIP() && !now.After(lease.TTL) {
-		lease.TTL = now
+		resource.State = resources.StateFree
+		close(lease.done)
 		c.JSON(http.StatusOK, gin.H{"result": "You have successfully released the lease"})
 		return
+	}
+
+	c.JSON(http.StatusForbidden, gin.H{"error": "Error: you don't have the permission to release a lease you don't own"})
+}
+
+func cleanState(lease *Lease, resource *resources.Resource) {
+	for {
+		select {
+		case <-lease.done:
+			return
+
+		default:
+			time.Sleep(time.Until(lease.TTL))
+			if time.Now().UTC().After(lease.TTL) {
+				resource.State = resources.StateFree
+				return
+			}
+		}
 	}
 }
