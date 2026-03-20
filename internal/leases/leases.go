@@ -104,7 +104,9 @@ func RenewLease(c *gin.Context) {
 	}
 
 	if lease.Holder == c.ClientIP() && !now.After(lease.TTL) {
-		CreateAndReturnLease(c, resource, lease.FencingToken+1)
+		lease.FencingToken++
+		lease.TTL = time.Now().UTC().Add(10 * time.Second)
+		c.JSON(http.StatusOK, gin.H{"result": lease})
 		return
 	}
 
