@@ -17,7 +17,6 @@ var ErrMakingLeaseId = errors.New("Error: unable to make an id for the new lease
 
 var leaseMap = make(map[*resources.Resource]*Lease)
 var muLeaseMap = sync.Mutex{}
-var muCreateLease = sync.Mutex{}
 
 type Lease struct {
 	ID           string    `json:"id"`
@@ -25,15 +24,6 @@ type Lease struct {
 	FencingToken int       `json:"fencing_token"`
 	TTL          time.Time `json:"ttl"`
 	done         chan struct{}
-	mu           sync.Mutex
-}
-
-func (l *Lease) GetLeaseTTL() time.Time {
-	l.mu.Lock()
-	ttl := l.TTL
-	l.mu.Unlock()
-
-	return ttl
 }
 
 func NewLease(holder string, fencingToken int) (*Lease, error) {
@@ -51,7 +41,6 @@ func NewLease(holder string, fencingToken int) (*Lease, error) {
 		FencingToken: fencingToken,
 		TTL:          time.Now().Add(time.Second * 10),
 		done:         make(chan struct{}),
-		mu:           sync.Mutex{},
 	}, nil
 }
 
@@ -71,7 +60,7 @@ func CreateAndReturnLease(c *gin.Context, resource *resources.Resource, fencingT
 		return nil
 	}
 
-	resource.UpdateState(resources.StateTaken)
+	resource.State = resources.StateTaken
 
 	muLeaseMap.Lock()
 	leaseMap[resource] = resultLease
@@ -86,24 +75,18 @@ func AcquireLease(c *gin.Context) {
 	resourceAny, _ := c.Get("resource")
 	resource := resourceAny.(*resources.Resource)
 
-	muCreateLease.Lock()
-	lease, ok := getLease(resource)
+	resource.Lock()
+	defer resource.Unlock()
 
+	lease, ok := getLease(resource)
 	if !ok {
 		resultLease := CreateAndReturnLease(c, resource, 0)
 		go cleanState(resultLease, resource)
-		muCreateLease.Unlock()
 		return
 	}
-	muCreateLease.Unlock()
 
-	ttl := lease.GetLeaseTTL()
-
-	if now.After(ttl) {
-		muCreateLease.Lock()
+	if now.After(lease.TTL) {
 		resultLease := CreateAndReturnLease(c, resource, lease.FencingToken+1)
-		muCreateLease.Unlock()
-
 		go cleanState(resultLease, resource)
 		return
 	} else {
@@ -117,19 +100,18 @@ func RenewLease(c *gin.Context) {
 	resourceAny, _ := c.Get("resource")
 	resource := resourceAny.(*resources.Resource)
 
+	resource.Lock()
+	defer resource.Unlock()
+
 	lease, ok := getLease(resource)
 	if !ok {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Error: there is no lease made on this resource"})
 		return
 	}
 
-	ttl := lease.GetLeaseTTL()
-
-	if lease.Holder == c.ClientIP() && !now.After(ttl) {
-		lease.mu.Lock()
+	if lease.Holder == c.ClientIP() && !now.After(lease.TTL) {
 		lease.FencingToken++
 		lease.TTL = time.Now().UTC().Add(10 * time.Second)
-		lease.mu.Unlock()
 
 		c.JSON(http.StatusOK, gin.H{"result": lease})
 		return
@@ -143,15 +125,16 @@ func ReleaseLease(c *gin.Context) {
 	resourceAny, _ := c.Get("resource")
 	resource := resourceAny.(*resources.Resource)
 
+	resource.Lock()
+	defer resource.Unlock()
+
 	lease, ok := getLease(resource)
 	if !ok {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Error: there is no lease made on this resource"})
 		return
 	}
 
-	ttl := lease.GetLeaseTTL()
-
-	if lease.Holder == c.ClientIP() && !now.After(ttl) {
+	if lease.Holder == c.ClientIP() && !now.After(lease.TTL) {
 		close(lease.done)
 		c.JSON(http.StatusOK, gin.H{"result": "You have successfully released the lease"})
 		return
@@ -167,13 +150,10 @@ func cleanState(lease *Lease, resource *resources.Resource) {
 			return
 
 		default:
-			ttl := lease.GetLeaseTTL()
+			time.Sleep(time.Until(lease.TTL))
 
-			time.Sleep(time.Until(ttl))
-
-			ttl = lease.GetLeaseTTL()
-			if time.Now().UTC().After(ttl) {
-				resource.UpdateState(resources.StateFree)
+			if time.Now().UTC().After(lease.TTL) {
+				resource.State = resources.StateFree
 				return
 			}
 		}

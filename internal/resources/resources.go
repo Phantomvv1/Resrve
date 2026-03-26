@@ -19,7 +19,7 @@ type Resource struct {
 	ID    string `json:"id"`
 	Name  string `json:"name"`
 	State int    `json:"state"`
-	Mu    sync.Mutex
+	sync.Mutex
 }
 
 func NewResource(id string, name string) *Resource {
@@ -27,14 +27,8 @@ func NewResource(id string, name string) *Resource {
 		ID:    id,
 		Name:  name,
 		State: StateFree,
-		Mu:    sync.Mutex{},
+		Mutex: sync.Mutex{},
 	}
-}
-
-func (r *Resource) UpdateState(state int) {
-	r.Mu.Lock()
-	r.State = state
-	r.Mu.Unlock()
 }
 
 var availableResources = []*Resource{NewResource("abcd", "Seat 1"), NewResource("efgh", "Seat 2"), NewResource("ijkl", "Seat 3")}
