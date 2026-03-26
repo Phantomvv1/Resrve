@@ -26,9 +26,12 @@ func setupRouter() *gin.Engine {
 }
 
 func resetState() {
-	muLeaseMap.Lock()
-	defer muLeaseMap.Unlock()
-	leaseMap = make(map[*resources.Resource]*Lease)
+	for _, r := range resources.AllResources() {
+		r.Lock()
+		r.State = resources.StateFree
+		r.UpdateLease(nil)
+		r.Unlock()
+	}
 }
 
 func TestAcquireLeaseSuccess(t *testing.T) {
@@ -86,7 +89,6 @@ func TestRetryAcquireSameClient(t *testing.T) {
 }
 
 func TestAcquireAfterExpiration(t *testing.T) {
-	t.Parallel()
 	resetState()
 	r := setupRouter()
 
@@ -110,7 +112,6 @@ func TestAcquireAfterExpiration(t *testing.T) {
 }
 
 func TestRenewAfterExpirationFails(t *testing.T) {
-	t.Parallel()
 	resetState()
 	r := setupRouter()
 
@@ -163,7 +164,7 @@ func TestConcurrentAcquire(t *testing.T) {
 	successCount := 0
 	mu := sync.Mutex{}
 
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		wg.Add(1)
 
 		go func(i int) {
@@ -191,7 +192,6 @@ func TestConcurrentAcquire(t *testing.T) {
 }
 
 func TestDelayedAcquire(t *testing.T) {
-	t.Parallel()
 	resetState()
 	r := setupRouter()
 
