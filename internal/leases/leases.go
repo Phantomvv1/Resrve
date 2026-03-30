@@ -49,6 +49,7 @@ func RenewLease(c *gin.Context) {
 	now := c.GetTime("time")
 	resourceAny, _ := c.Get("resource")
 	resource := resourceAny.(*resources.Resource)
+	fencingToken := c.GetInt("fencingToken")
 
 	resource.Lock()
 	defer resource.Unlock()
@@ -57,6 +58,10 @@ func RenewLease(c *gin.Context) {
 	if lease == nil {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Error: there is no lease made on this resource"})
 		return
+	}
+
+	if lease.FencingToken != fencingToken {
+
 	}
 
 	if lease.Holder == c.ClientIP() && !now.After(lease.TTL) {
