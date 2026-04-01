@@ -1,8 +1,12 @@
 package leases
 
 import (
+	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -19,7 +23,7 @@ func setupRouter() *gin.Engine {
 	r.Use(middleware.ResourceGetterMiddleware)
 
 	r.POST("/leases/:id", AcquireLease)
-	r.PUT("/leases/:id/renew", RenewLease)
+	r.POST("/leases/:id/renew", RenewLease)
 	r.DELETE("/leases/:id", ReleaseLease)
 
 	return r
@@ -122,7 +126,7 @@ func TestRenewAfterExpirationFails(t *testing.T) {
 
 	time.Sleep(11 * time.Second)
 
-	reqRenew := httptest.NewRequest(http.MethodPut, "/leases/abcd/renew", nil)
+	reqRenew := httptest.NewRequest(http.MethodPost, "/leases/abcd/renew", nil)
 	reqRenew.RemoteAddr = "1.1.1.1:1234"
 
 	w := httptest.NewRecorder()
@@ -133,6 +137,26 @@ func TestRenewAfterExpirationFails(t *testing.T) {
 	}
 }
 
+func getFencingToken(rr *httptest.ResponseRecorder) (int, error) {
+	body, err := io.ReadAll(rr.Body)
+	if err != nil {
+		return 0, err
+	}
+
+	var resp struct {
+		Result struct {
+			FencingToken int `json:"fencing_token"`
+		} `json:"result"`
+	}
+
+	err = json.Unmarshal(body, &resp)
+	if err != nil {
+		return 0, err
+	}
+
+	return resp.Result.FencingToken, nil
+}
+
 func TestRetryRenew(t *testing.T) {
 	resetState()
 	r := setupRouter()
@@ -140,16 +164,35 @@ func TestRetryRenew(t *testing.T) {
 	req1 := httptest.NewRequest(http.MethodPost, "/leases/abcd", nil)
 	req1.RemoteAddr = "1.1.1.1:1234"
 
-	r.ServeHTTP(httptest.NewRecorder(), req1)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req1)
 
-	reqRenew := httptest.NewRequest(http.MethodPut, "/leases/abcd/renew", nil)
+	fencingToken, err := getFencingToken(rr)
+	if err != nil {
+		t.Fatalf("Error: unable to get the fencing token from the response %s", err.Error())
+		return
+	}
+
+	body := fmt.Sprintf(`{"fencing_token": %d}`, fencingToken)
+	reader := strings.NewReader(body)
+	reqRenew := httptest.NewRequest(http.MethodPost, "/leases/abcd/renew", reader)
 	reqRenew.RemoteAddr = "1.1.1.1:1234"
 
 	w1 := httptest.NewRecorder()
 	r.ServeHTTP(w1, reqRenew)
 
+	fencingToken, err = getFencingToken(w1)
+	if err != nil {
+		t.Fatalf("Error: unable to get the fencing token from the response %s", err.Error())
+		return
+	}
+
+	body = fmt.Sprintf(`{"fencing_token": %d}`, fencingToken)
+	reqRenew2 := httptest.NewRequest(http.MethodPost, "/leases/abcd/renew", strings.NewReader(body))
+	reqRenew2.RemoteAddr = "1.1.1.1:1234"
+
 	w2 := httptest.NewRecorder()
-	r.ServeHTTP(w2, reqRenew)
+	r.ServeHTTP(w2, reqRenew2)
 
 	if w2.Code != http.StatusOK {
 		t.Fatalf("expected retry renew to succeed, got %d", w2.Code)

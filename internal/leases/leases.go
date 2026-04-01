@@ -61,7 +61,8 @@ func RenewLease(c *gin.Context) {
 	}
 
 	if lease.FencingToken != fencingToken {
-
+		c.JSON(http.StatusForbidden, gin.H{"error": "Error: you don't have the permission to renew a lease you don't own. Fencing token is different"})
+		return
 	}
 
 	if lease.Holder == c.ClientIP() && !now.After(lease.TTL) {
@@ -69,6 +70,9 @@ func RenewLease(c *gin.Context) {
 		lease.TTL = now.Add(10 * time.Second)
 
 		c.JSON(http.StatusOK, gin.H{"result": lease})
+		return
+	} else if now.After(lease.TTL) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Error: you can't renew a lease that has already expired"})
 		return
 	}
 
@@ -79,6 +83,7 @@ func ReleaseLease(c *gin.Context) {
 	now := c.GetTime("time")
 	resourceAny, _ := c.Get("resource")
 	resource := resourceAny.(*resources.Resource)
+	fencingToken := c.GetInt("fencingToken")
 
 	resource.Lock()
 	defer resource.Unlock()
@@ -86,6 +91,14 @@ func ReleaseLease(c *gin.Context) {
 	lease := resource.Lease()
 	if lease == nil {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Error: there is no lease made on this resource"})
+		return
+	}
+
+	if lease.FencingToken != fencingToken {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Error: you don't have the permission to release a lease you don't own. Fencing token is different"})
+		return
+	} else if now.After(lease.TTL) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Error: you can't release a lease that has already expired"})
 		return
 	}
 
